@@ -1,4 +1,29 @@
-use anyhow::Context as _;
+#!/usr/bin/env python3
+"""
+user01_移除无用AYA_LOGS初始化并优化IPv6格式化_v8.py
+
+用途：
+    1) 移除用户态 main() 里的 aya_log::EbpfLogger::init 调用。
+       当前 XDP 程序没用 aya-log-ebpf 输出日志，初始化会打
+       "AYA_LOGS not found" 的噪声警告，直接删掉。
+    2) 优化 fmt_ipv6() 函数，按 RFC 5952 风格压缩 IPv6 地址：
+       - 去掉每个 16-bit 组的前导 0
+       - 用 :: 压缩最长的连续零段（至少 2 组）
+       效果：0:0:0:0:0:0:0:1 → ::1
+
+测试目标：
+    事件日志可读性提升，且不再有 AYA_LOGS 噪声警告。
+
+版本变更：
+    v1  初版 fmt_ipv6（不压缩，原样输出 8 组）
+    v8  移除 EbpfLogger init + RFC 5952 压缩
+"""
+import sys, shutil
+
+PATH = "/root/adblock/adblock/src/main.rs"
+BAK  = "/root/adblock/adblock/src/main.rs.pre_v8"
+
+CONTENT = r'''use anyhow::Context as _;
 use aya::maps::RingBuf;
 use aya::programs::{Xdp, XdpMode};
 use clap::Parser;
@@ -129,3 +154,13 @@ fn fmt_ipv6(b: &[u8]) -> String {
     }
     s
 }
+'''
+
+# 备份
+shutil.copy(PATH, BAK)
+
+# 写入新内容
+with open(PATH, "w") as f:
+    f.write(CONTENT)
+print("OK: v8 写入成功")
+print(f"备份: {BAK}")
