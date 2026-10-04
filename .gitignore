@@ -1,2 +1,7 @@
 target/
 captures/
+*.bak
+*.normal
+*.working
+*_bak
+*.v5_bak
