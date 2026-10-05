@@ -1,6 +1,9 @@
 use anyhow::{Context as _, anyhow};
 use aya_build::Toolchain;
 
+// 与 rust-toolchain.toml 的 channel 保持一致；升级时两处同步改。
+const EBPF_TOOLCHAIN: &str = "nightly-2026-09-29";
+
 fn main() -> anyhow::Result<()> {
     let cargo_metadata::Metadata { packages, .. } = cargo_metadata::MetadataCommand::new()
         .no_deps()
@@ -23,5 +26,5 @@ fn main() -> anyhow::Result<()> {
             .as_str(),
         ..Default::default()
     };
-    aya_build::build_ebpf([ebpf_package], Toolchain::default())
+    aya_build::build_ebpf([ebpf_package], Toolchain::Custom(EBPF_TOOLCHAIN))
 }
