@@ -3,7 +3,7 @@
 遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.1.0] - 2026-10-05
 
 ### Added
 - eBPF XDP 程序骨架：以太头 / IPv4 / IPv6 解析
@@ -20,10 +20,3 @@
 
 ### Fixed
 - clippy workspace unwinding panic（拆成 host / ebpf 两个 target）
-
-## [0.1.0] - 2026-10-04
-
-### Added
-- 初始项目骨架（aya-template 生成）
-- Rust toolchain 钉版 nightly-2026-09-29
-- bpf-linker 0.11.1
