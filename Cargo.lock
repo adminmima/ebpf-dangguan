@@ -11,7 +11,6 @@ dependencies = [
  "anyhow",
  "aya",
  "aya-build",
- "aya-log",
  "cargo_metadata",
  "clap",
  "env_logger",
@@ -136,18 +135,6 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "aya-log"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "476912cd6322ecf481a48f9db82207406a472563875eef014e927800522aac5c"
-dependencies = [
- "aya",
- "aya-log-common",
- "log",
- "thiserror",
 ]
 
 [[package]]

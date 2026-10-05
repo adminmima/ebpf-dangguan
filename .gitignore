@@ -5,3 +5,6 @@ captures/
 *.working
 *_bak
 *.v5_bak
+
+# 本地开发脚本
+/scripts/
