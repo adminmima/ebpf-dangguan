@@ -4,7 +4,7 @@ help:
 	@echo "make check     - clippy + fmt + build + test + verifier"
 	@echo "make build     - build workspace (ebpf via aya-build)"
 	@echo "make ebpf      - build ebpf to target/ebpf-check"
-	@echo "make verifier  - bpftool prog load (root + /sys/fs/bpf)"
+	@echo "make verifier  - aya self-load verify (root + /sys/fs/bpf)"
 	@echo "make clippy       - clippy-host + clippy-ebpf"
 	@echo "make clippy-host  - clippy workspace, 排除 adblock-ebpf"
 	@echo "make clippy-ebpf  - clippy adblock-ebpf, bpfel target + build-std"
@@ -18,12 +18,19 @@ build:
 ebpf:
 	cargo build -p adblock-ebpf --target bpfel-unknown-none --release -Z build-std=core --target-dir target/ebpf-check
 
-verifier: ebpf
-	@if [ "$$(id -u)" != "0" ]; then echo "verifier needs root"; exit 1; fi
+verifier: build
+	@if [ "$$(id -u)" != "0" ]; then echo "verifier needs root (XDP attach)"; exit 1; fi
 	@if ! mountpoint -q /sys/fs/bpf; then echo "/sys/fs/bpf not mounted: mount -t bpf bpf /sys/fs/bpf"; exit 1; fi
-	@OBJ=target/ebpf-check/bpfel-unknown-none/release/adblock; \
-	if [ ! -f "$$OBJ" ]; then echo "not found: $$OBJ"; exit 1; fi; \
-	bpftool prog load "$$OBJ" /sys/fs/bpf/adblock_check && echo "verifier OK" && rm -f /sys/fs/bpf/adblock_check
+	@echo "用 aya 自身加载验证（bpftool/libbpf 不支持 aya 标准 #[map] 格式）..."
+	@timeout 30 cargo run --release -p adblock -- --iface lo --verify; \
+	RET=$$?; \
+	if [ $$RET -eq 0 ]; then \
+		echo "verifier OK"; \
+	elif [ $$RET -eq 124 ]; then \
+		echo "verifier FAILED: timeout (30s)"; exit 1; \
+	else \
+		echo "verifier FAILED: exit code $$RET"; exit 1; \
+	fi
 
 clippy: clippy-host clippy-ebpf
 
