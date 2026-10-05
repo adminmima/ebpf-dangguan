@@ -339,3 +339,68 @@ runner = "sudo -E" 加注释说明用途——XDP attach 需要 root，cargo run
 - 未执行的操作：git remote add + git push（发布动作，待 GitHub 仓库建立后执行）
 
 文档结束。
+
+---
+
+## 附录：发布后 CI 修复记录
+
+时间：2026-10-06（首次 push 后）
+触发：首次 push 后 CI 失败，逐项定位修复。共 3 个 commit。
+
+### 修复 1：0f7959f — 移除 bpfel-unknown-none targets
+
+问题：dtolnay/rust-toolchain 的 targets 参数触发 rustup target add
+bpfel-unknown-none，而 nightly 无此 target 的预编译 rust-std，报
+component 'rust-std' for target 'bpfel-unknown-none' is unavailable。
+
+定案：删掉 targets 参数。eBPF 编译通过 -Z build-std=core 从
+rust-src 源码构建 core，不需要预编译的 target 库。
+
+### 修复 2：225de80 — bpf-linker 改用预编译二进制
+
+问题：CI 里 cargo install bpf-linker 报 "could not find llvm-config in
+directories specified by environment variable PATH"。bpf-linker 的
+build.rs 需要 LLVM 开发库（llvm-sys 链接 libLLVM），Ubuntu runner
+默认没有，编译直接失败。
+
+本地能过是因为 Arch 系统自带 LLVM 23.1.1（llvm-config --version 输出
+23.1.1），CI 的 Ubuntu 环境没有。
+
+定案：改用官方 GitHub Release 提供的 x86_64-unknown-linux-musl 静态
+二进制，不依赖系统 LLVM：
+
+    curl -sSL -o bpf-linker.tar.zst \
+      https://github.com/aya-rs/bpf-linker/releases/download/v0.11.1/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+    tar -I zstd -xf bpf-linker.tar.zst -C /usr/local/bin
+
+（apt 需先装 zstd 解压）。约几秒完成，比 cargo install 快一个数量级。
+
+### 修复 3：cae2660 — aya-build 显式指定钉版工具链
+
+问题：CI 到 build 步报 "toolchain 'nightly-x86_64-unknown-linux-gnu'
+is not installed"。根因：aya-build 的 Toolchain::default() 返回
+Toolchain::Nightly，as_str() 硬编码字符串 "nightly"，CI 只装了钉版
+nightly-2026-09-29，无 "nightly" 别名。
+
+本地能过是因为本地 rustup 默认 toolchain 就是 "nightly"。
+
+定案：adblock/build.rs 改 Toolchain::default() 为
+Toolchain::Custom(EBPF_TOOLCHAIN)，其中
+
+    const EBPF_TOOLCHAIN: &str = "nightly-2026-09-29";
+
+与 rust-toolchain.toml 的 channel 一致，升级时两处同步改。
+
+### 最终 CI 状态
+
+run id 37339332119 全绿，所有 step success：
+checkout、rust-toolchain、Install bpf-linker (prebuilt)、fmt、
+clippy (host)、clippy (ebpf)、build、test。
+
+verifier 不在 CI 里跑（runner 无 BPF 权限），仅本地 sudo make verifier。
+
+### 收尾
+
+master HEAD：cae2660
+origin/master 已同步
+工作区干净
