@@ -135,8 +135,8 @@ fn fmt_ipv6(b: &[u8]) -> String {
     let mut best_len = 0usize;
     let mut cur_start = 0usize;
     let mut cur_len = 0usize;
-    for i in 0..8 {
-        if groups[i] == 0 {
+    for (i, g) in groups.iter().enumerate() {
+        if *g == 0 {
             if cur_len == 0 {
                 cur_start = i;
             }

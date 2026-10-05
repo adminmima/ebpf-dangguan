@@ -64,8 +64,8 @@ fn bump(idx: u32) {
 
 #[derive(Copy, Clone)]
 enum L4 {
-    Tcp(u32),
-    Udp(u32),
+    Tcp,
+    Udp,
     Fragment,
     Icmpv6,
     Other,
@@ -114,8 +114,8 @@ fn parse_ipv6_ext(data: usize, data_end: usize, mut offset: u32, mut nh: u8) -> 
                 }
                 return Ok(L4::Fragment);
             }
-            6 => return Ok(L4::Tcp(offset)),
-            17 => return Ok(L4::Udp(offset)),
+            6 => return Ok(L4::Tcp),
+            17 => return Ok(L4::Udp),
             58 => return Ok(L4::Icmpv6),
             50 | 59 => return Ok(L4::Other),
             _ => return Ok(L4::Other),
@@ -159,7 +159,7 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
                     i += 1;
                 }
             }
-            if IP_BLOCKLIST_V4.get(&Key::new(32, src_ip)).is_some() {
+            if IP_BLOCKLIST_V4.get(Key::new(32, src_ip)).is_some() {
                 bump(S_DROPPED_V4);
                 return Ok(xdp_action::XDP_DROP);
             }
@@ -181,7 +181,7 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
                 }
             }
             // 先查 IP 黑名单（不管扩展头怎样，源 IP 都能查）
-            if IP_BLOCKLIST_V6.get(&Key::new(128, src_ip)).is_some() {
+            if IP_BLOCKLIST_V6.get(Key::new(128, src_ip)).is_some() {
                 bump(S_DROPPED_V6);
                 return Ok(xdp_action::XDP_DROP);
             }
@@ -189,8 +189,8 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
             // 解析扩展头链
             let next_hdr = unsafe { *((data + 20) as *const u8) };
             match parse_ipv6_ext(data, data_end, 54, next_hdr) {
-                Ok(L4::Tcp(_)) => bump(S_TCP),
-                Ok(L4::Udp(_)) => bump(S_UDP),
+                Ok(L4::Tcp) => bump(S_TCP),
+                Ok(L4::Udp) => bump(S_UDP),
                 Ok(L4::Icmpv6) => {
                     bump(S_ICMPV6);
                     let ev = Event {
