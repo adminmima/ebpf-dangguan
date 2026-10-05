@@ -1,66 +1,70 @@
-# adblock
+# ebpf-dangguan
 
-## Prerequisites
+> 一夫当关，万夫莫开 — *One guard at the pass, ten thousand cannot get through.*
 
-1. stable rust toolchains: `rustup toolchain install stable`
-1. nightly rust toolchains: `rustup toolchain install nightly --component rust-src`
-1. (if cross-compiling) rustup target: `rustup target add ${ARCH}-unknown-linux-musl`
-1. (if cross-compiling) LLVM: (e.g.) `brew install llvm` (on macOS)
-1. bpf-linker: `cargo install bpf-linker` (`--no-default-features` on macOS)
+eBPF/XDP-based DNS ad blocker and pure-IP direct-connection detector for Linux home routers.
 
-## Build & Run
+[中文文档](README.zh-CN.md) · [Handover / Roadmap](HANDOVER.md)
 
-Use `cargo build`, `cargo check`, etc. as normal. Run your program with:
+## Status
 
-```shell
-cargo run --release
-```
+**Early development.** Core infrastructure is complete; DNS filtering and pure-IP detection logic are in progress.
 
-Cargo build scripts are used to automatically build the eBPF correctly and include it in the
-program.
+## Design goals
 
-## Cross-compiling on macOS
+- **Large-scale DNS ad blocking** — up to millions of domains, O(1) hash lookup in XDP
+- **Pure-IP direct-connection detection** — flag connections that bypass DNS resolution
+- **Full IPv6 support** — extension-header parsing with a fail-closed policy, no IPv6 bypass
+- **Hot-reloadable blocklists** — no service restart required
 
-Cross compilation should work on both Intel and Apple Silicon Macs.
+## Current capabilities
 
-```shell
-cargo build --package adblock --release \
-  --target=${ARCH}-unknown-linux-musl \
-  --config=target.${ARCH}-unknown-linux-musl.linker=\"rust-lld\"
-```
-The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/adblock` can be
-copied to a Linux server or VM and run there.
+| Capability | Status |
+|---|---|
+| XDP Ethernet / IPv4 / IPv6 parsing | done |
+| IPv6 extension headers + fail-closed | done |
+| LPM Trie IP blocklist (v4 / v6) | done |
+| RingBuf kernel → user event channel | done |
+| DNS QNAME extraction | in progress |
+| Domain blocklist + drop | planned |
+| Pure-IP detection (TC egress) | planned |
+
+See [HANDOVER.md](HANDOVER.md) for the full capability list and design decisions.
+
+## Requirements
+
+| Component | Version |
+|---|---|
+| Linux kernel | >= 5.8 (RingBuf) |
+| Rust toolchain | nightly-2026-09-29 (pinned in `rust-toolchain.toml`) |
+| bpf-linker | 0.11.1 |
+| bpftool | recent (for local verifier) |
+
+## Build
+
+    make build        # compile workspace (eBPF via aya-build)
+    make check        # clippy + fmt + build + test + verifier
+    make verifier     # local verifier (needs root + /sys/fs/bpf)
+
+## Run
+
+    sudo RUST_LOG=info cargo run --release -p adblock -- --iface <iface>
+
+Events are reported via RingBuf and printed to stdout.
+
+## Verify without attaching
+
+Load, attach, check maps, detach, exit — no packet loop:
+
+    sudo cargo run --release -p adblock -- --iface lo --verify
 
 ## License
 
-- 用户态部分（adblock、adblock-common）：AGPL-3.0-or-later
-- eBPF 内核态部分（adblock-ebpf）：Dual MIT/GPL——内核在 bpf_prog_load 时校验
-  ELF license section，须为 GPL 兼容字符串（本程序用到 GPL-only helper
-  bpf_ktime_get_ns），Cargo license 字段与之一致
-- 项目骨架源自 aya-rs/aya-template（MIT OR Apache-2.0），详见 NOTICE；
-  LICENSE-MIT、LICENSE-APACHE、LICENSE-GPL2 依上游条款保留
+- **User space** (`adblock`, `adblock-common`): AGPL-3.0-or-later
+- **eBPF** (`adblock-ebpf`): Dual MIT/GPL — the kernel validates the ELF license section on `bpf_prog_load`, requiring a GPL-compatible string (this program uses the GPL-only helper `bpf_ktime_get_ns`)
 
-## 开发环境要求
+Project skeleton based on [aya-rs/aya-template](https://github.com/aya-rs/aya-template) (MIT OR Apache-2.0). See [NOTICE](NOTICE).
 
-- Linux 内核 >= 5.8（RingBuf 硬要求；更低内核需改用 PerfEventArray）
-- Rust 工具链 nightly-2026-09-29（见 rust-toolchain.toml），需 rust-src 组件
-- bpf-linker 0.11.1
-- bpftool（本地 verifier 检查用）
+## Name
 
-### 安装步骤
-
-    rustup toolchain install nightly-2026-09-29 --component rust-src --component rustfmt --component clippy
-    rustup target add --toolchain nightly-2026-09-29 bpfel-unknown-none
-    cargo install bpf-linker --locked --version 0.11.1
-
-### 版本对齐规则
-
-- aya / aya-ebpf / aya-log / aya-log-ebpf 必须来自同一 release 线（当前 0.2.x）
-- 升级 bpf-linker 可能改变 LLVM 行为，升级前跑 make check
-
-### 本地验证
-
-    make check     # clippy + fmt + build + test + verifier
-    make verifier  # 仅 verifier（需 root + /sys/fs/bpf 挂载）
-
-CI 只跑 clippy + fmt + build + test，不跑 verifier——GitHub Actions 默认 runner 无 BPF 权限。
+**dangguan** (当关) — from *一夫当关，万夫莫开*: one guard at the pass, ten thousand cannot get through.
