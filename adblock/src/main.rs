@@ -1,6 +1,8 @@
 use anyhow::Context as _;
-use aya::maps::RingBuf;
-use aya::programs::{Xdp, XdpMode};
+use aya::{
+    maps::RingBuf,
+    programs::{Xdp, XdpMode},
+};
 use clap::Parser;
 use log::{debug, info, warn};
 use tokio::signal;
@@ -37,8 +39,9 @@ async fn main() -> anyhow::Result<()> {
     let Opt { iface } = opt;
     let program: &mut Xdp = ebpf.program_mut("adblock_ebpf").unwrap().try_into()?;
     program.load()?;
-    program.attach(&iface, XdpMode::default())
-        .context("failed to attach the XDP program - try changing XdpMode::default() to XdpMode::Skb")?;
+    program.attach(&iface, XdpMode::default()).context(
+        "failed to attach the XDP program - try changing XdpMode::default() to XdpMode::Skb",
+    )?;
 
     // RingBuf 消费
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;

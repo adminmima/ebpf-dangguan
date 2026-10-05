@@ -4,7 +4,10 @@
 use aya_ebpf::{
     bindings::xdp_action,
     macros::{map, xdp},
-    maps::{lpm_trie::{Key, LpmTrie}, PerCpuArray, RingBuf},
+    maps::{
+        PerCpuArray, RingBuf,
+        lpm_trie::{Key, LpmTrie},
+    },
     programs::XdpContext,
 };
 
@@ -20,7 +23,7 @@ pub struct Event {
 static STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(16, 0);
 
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(1 << 20, 0);  // 1 MiB
+static EVENTS: RingBuf = RingBuf::with_byte_size(1 << 20, 0); // 1 MiB
 #[map]
 static IP_BLOCKLIST_V4: LpmTrie<[u8; 4], u8> = LpmTrie::with_max_entries(100_000, 0);
 #[map]
@@ -34,7 +37,7 @@ const S_TRUNCATED: u32 = 4;
 const S_ABORTED: u32 = 5;
 const S_DROPPED_V4: u32 = 6;
 const S_DROPPED_V6: u32 = 7;
-const S_EXT_ERR: u32 = 8;      // 扩展头解析失败（fail-closed）
+const S_EXT_ERR: u32 = 8; // 扩展头解析失败（fail-closed）
 const S_ICMPV6: u32 = 9;
 const S_FRAGMENT: u32 = 10;
 const S_TCP: u32 = 11;
@@ -45,58 +48,77 @@ const S_OTHER_L4: u32 = 13;
 pub fn adblock_ebpf(ctx: XdpContext) -> u32 {
     match try_adblock(&ctx) {
         Ok(ret) => ret,
-        Err(_) => { bump(S_ABORTED); xdp_action::XDP_ABORTED }
+        Err(_) => {
+            bump(S_ABORTED);
+            xdp_action::XDP_ABORTED
+        }
     }
 }
 
 #[inline(always)]
 fn bump(idx: u32) {
-    if let Some(v) = STATS.get_ptr_mut(idx) { unsafe { *v += 1 }; }
+    if let Some(v) = STATS.get_ptr_mut(idx) {
+        unsafe { *v += 1 };
+    }
 }
 
 #[derive(Copy, Clone)]
-enum L4 { Tcp(u32), Udp(u32), Fragment, Icmpv6, Other }
+enum L4 {
+    Tcp(u32),
+    Udp(u32),
+    Fragment,
+    Icmpv6,
+    Other,
+}
 
 /// 解析 IPv6 扩展头链
 /// 返回 Ok(L4) 表示成功，Err(()) 表示解析失败（调用方必须 DROP）
 #[inline(always)]
-fn parse_ipv6_ext(data: usize, data_end: usize, mut offset: u32, mut nh: u8)
-    -> Result<L4, ()>
-{
+fn parse_ipv6_ext(data: usize, data_end: usize, mut offset: u32, mut nh: u8) -> Result<L4, ()> {
     let mut depth = 0u8;
     while depth < 8 {
         match nh {
             0 | 43 | 60 => {
                 let hdr_off = offset as usize;
                 // 关键：data + hdr_off 一起参与比较，verifier 才能更新 data 的可访问范围
-                if data + hdr_off + 2 > data_end { return Err(()); }
+                if data + hdr_off + 2 > data_end {
+                    return Err(());
+                }
                 let ext_len = unsafe { *((data + hdr_off + 1) as *const u8) } as usize;
                 let total_len = (ext_len + 1) * 8;
-                if data + hdr_off + total_len > data_end { return Err(()); }
+                if data + hdr_off + total_len > data_end {
+                    return Err(());
+                }
                 nh = unsafe { *((data + hdr_off) as *const u8) };
                 offset += total_len as u32;
                 depth += 1;
             }
             51 => {
                 let hdr_off = offset as usize;
-                if data + hdr_off + 2 > data_end { return Err(()); }
+                if data + hdr_off + 2 > data_end {
+                    return Err(());
+                }
                 let pl_len = unsafe { *((data + hdr_off + 1) as *const u8) } as usize;
                 let total_len = (pl_len + 2) * 4;
-                if data + hdr_off + total_len > data_end { return Err(()); }
+                if data + hdr_off + total_len > data_end {
+                    return Err(());
+                }
                 nh = unsafe { *((data + hdr_off) as *const u8) };
                 offset += total_len as u32;
                 depth += 1;
             }
             44 => {
                 let hdr_off = offset as usize;
-                if data + hdr_off + 8 > data_end { return Err(()); }
+                if data + hdr_off + 8 > data_end {
+                    return Err(());
+                }
                 return Ok(L4::Fragment);
             }
-            6  => return Ok(L4::Tcp(offset)),
+            6 => return Ok(L4::Tcp(offset)),
             17 => return Ok(L4::Udp(offset)),
             58 => return Ok(L4::Icmpv6),
             50 | 59 => return Ok(L4::Other),
-            _  => return Ok(L4::Other),
+            _ => return Ok(L4::Other),
         }
     }
     Err(())
@@ -114,18 +136,28 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
         unsafe { *v = pkt_len };
     }
 
-    if data + 14 > data_end { bump(S_TRUNCATED); return Ok(xdp_action::XDP_PASS); }
+    if data + 14 > data_end {
+        bump(S_TRUNCATED);
+        return Ok(xdp_action::XDP_PASS);
+    }
 
     let eth_proto = unsafe { u16::from_be(*((data + 12) as *const u16)) };
 
     match eth_proto {
         0x0800 => {
             bump(S_IPV4);
-            if data + 34 > data_end { bump(S_TRUNCATED); return Ok(xdp_action::XDP_PASS); }
+            if data + 34 > data_end {
+                bump(S_TRUNCATED);
+                return Ok(xdp_action::XDP_PASS);
+            }
             let mut src_ip = [0u8; 4];
             unsafe {
                 let p = (data + 26) as *const u8;
-                let mut i = 0; while i < 4 { src_ip[i] = *p.add(i); i += 1; }
+                let mut i = 0;
+                while i < 4 {
+                    src_ip[i] = *p.add(i);
+                    i += 1;
+                }
             }
             if IP_BLOCKLIST_V4.get(&Key::new(32, src_ip)).is_some() {
                 bump(S_DROPPED_V4);
@@ -134,12 +166,19 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
         }
         0x86DD => {
             bump(S_IPV6);
-            if data + 54 > data_end { bump(S_TRUNCATED); return Ok(xdp_action::XDP_PASS); }
+            if data + 54 > data_end {
+                bump(S_TRUNCATED);
+                return Ok(xdp_action::XDP_PASS);
+            }
 
             let mut src_ip = [0u8; 16];
             unsafe {
                 let p = (data + 22) as *const u8;
-                let mut i = 0; while i < 16 { src_ip[i] = *p.add(i); i += 1; }
+                let mut i = 0;
+                while i < 16 {
+                    src_ip[i] = *p.add(i);
+                    i += 1;
+                }
             }
             // 先查 IP 黑名单（不管扩展头怎样，源 IP 都能查）
             if IP_BLOCKLIST_V6.get(&Key::new(128, src_ip)).is_some() {
@@ -150,9 +189,9 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
             // 解析扩展头链
             let next_hdr = unsafe { *((data + 20) as *const u8) };
             match parse_ipv6_ext(data, data_end, 54, next_hdr) {
-                Ok(L4::Tcp(_))    => bump(S_TCP),
-                Ok(L4::Udp(_))    => bump(S_UDP),
-                Ok(L4::Icmpv6)    => {
+                Ok(L4::Tcp(_)) => bump(S_TCP),
+                Ok(L4::Udp(_)) => bump(S_UDP),
+                Ok(L4::Icmpv6) => {
                     bump(S_ICMPV6);
                     let ev = Event {
                         src_ip,
@@ -161,9 +200,9 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
                         _pad: 0,
                     };
                     let _ = EVENTS.output::<Event>(&ev, 0);
-                },
-                Ok(L4::Fragment)  => bump(S_FRAGMENT),
-                Ok(L4::Other)     => bump(S_OTHER_L4),
+                }
+                Ok(L4::Fragment) => bump(S_FRAGMENT),
+                Ok(L4::Other) => bump(S_OTHER_L4),
                 Err(()) => {
                     // fail-closed：解析失败一律丢弃
                     bump(S_EXT_ERR);
@@ -178,7 +217,9 @@ fn try_adblock(ctx: &XdpContext) -> Result<u32, u32> {
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! { loop {} }
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
 
 #[unsafe(link_section = "license")]
 #[unsafe(no_mangle)]
