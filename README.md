@@ -54,3 +54,31 @@ dual licensed as above, without any additional terms or conditions.
 [Apache license]: LICENSE-APACHE
 [MIT license]: LICENSE-MIT
 [GNU General Public License, Version 2]: LICENSE-GPL2
+
+
+---
+
+## 开发环境要求
+
+- Linux 内核 >= 5.8（RingBuf 硬要求；更低内核需改用 PerfEventArray）
+- Rust 工具链 nightly-2026-09-29（见 rust-toolchain.toml），需 rust-src 组件
+- bpf-linker 0.11.1
+- bpftool（本地 verifier 检查用）
+
+### 安装步骤
+
+    rustup toolchain install nightly-2026-09-29 --component rust-src --component rustfmt --component clippy
+    rustup target add --toolchain nightly-2026-09-29 bpfel-unknown-none
+    cargo install bpf-linker --locked --version 0.11.1
+
+### 版本对齐规则
+
+- aya / aya-ebpf / aya-log / aya-log-ebpf 必须来自同一 release 线（当前 0.2.x）
+- 升级 bpf-linker 可能改变 LLVM 行为，升级前跑 make check
+
+### 本地验证
+
+    make check     # clippy + fmt + build + test + verifier
+    make verifier  # 仅 verifier（需 root + /sys/fs/bpf 挂载）
+
+CI 只跑 clippy + fmt + build + test，不跑 verifier——GitHub Actions 默认 runner 无 BPF 权限。

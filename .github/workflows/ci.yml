@@ -1,0 +1,29 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-29
+          components: rust-src, rustfmt, clippy
+          targets: bpfel-unknown-none
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --locked --version 0.11.1
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: build
+        run: cargo build --release
+
+      - name: test
+        run: cargo test --workspace
