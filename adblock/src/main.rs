@@ -12,6 +12,11 @@ struct Opt {
     #[clap(short, long)]
     /// 要挂载 XDP 程序的网卡名（如 eth0、br0、enp0s29u1u7u1）
     iface: String,
+
+    /// 验证模式：加载 → attach → 检查 map → detach → exit(0)
+    /// 不进入收包循环；任何一步失败以非零码退出
+    #[clap(long)]
+    verify: bool,
 }
 
 #[tokio::main]
@@ -33,17 +38,24 @@ async fn main() -> anyhow::Result<()> {
         "/adblock"
     )))?;
 
-    // 不再初始化 aya_log::EbpfLogger —— 当前 XDP 程序没有用 aya-log-ebpf
-    // 输出日志，初始化会报 "AYA_LOGS not found" 的噪声警告。
+    // === 短路模式：--verify ===
+    if opt.verify {
+        if let Err(e) = run_verify(&mut ebpf, &opt.iface) {
+            eprintln!("verify FAILED: {e:#}");
+            std::process::exit(1);
+        }
+        println!("verify OK");
+        std::process::exit(0);
+    }
 
-    let Opt { iface } = opt;
+    // === 正常模式 ===
+    let Opt { iface, .. } = opt;
     let program: &mut Xdp = ebpf.program_mut("adblock_ebpf").unwrap().try_into()?;
     program.load()?;
     program.attach(&iface, XdpMode::default()).context(
         "failed to attach the XDP program - try changing XdpMode::default() to XdpMode::Skb",
     )?;
 
-    // RingBuf 消费
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
     let mut async_fd = tokio::io::unix::AsyncFd::new(ring)?;
 
@@ -79,9 +91,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 把 16 字节 IPv6 地址格式化成 RFC 5952 风格的字符串：
-/// - 去掉每个 16-bit 组的前导 0
-/// - 用 :: 压缩最长的连续零段（至少 2 组）
+/// 验证模式：加载 → attach → 检查 map → detach → 返回
+/// 全程同步，任何一步失败立即返回 Err。
+fn run_verify(ebpf: &mut aya::Ebpf, iface: &str) -> anyhow::Result<()> {
+    // 1. 四个 map 存在性检查
+    for name in ["STATS", "EVENTS", "IP_BLOCKLIST_V4", "IP_BLOCKLIST_V6"] {
+        if ebpf.map(name).is_none() {
+            anyhow::bail!("map {name} not found");
+        }
+        eprintln!("  map {name}: OK");
+    }
+
+    // 2. XDP 加载 + attach
+    let program: &mut Xdp = ebpf
+        .program_mut("adblock_ebpf")
+        .ok_or_else(|| anyhow::anyhow!("program adblock_ebpf not found"))?
+        .try_into()?;
+    program.load().context("XDP load failed")?;
+    eprintln!("  program load: OK");
+
+    let link_id = program
+        .attach(iface, XdpMode::default())
+        .with_context(|| format!("XDP attach to {iface} failed"))?;
+    eprintln!("  XDP attach to {iface}: OK");
+
+    // 3. 立即 detach
+    program.detach(link_id).context("XDP detach failed")?;
+    eprintln!("  XDP detach: OK");
+
+    Ok(())
+}
+
+/// 把 16 字节 IPv6 地址格式化成 RFC 5952 风格字符串
 fn fmt_ipv6(b: &[u8]) -> String {
     if b.len() < 16 {
         return "?".into();
@@ -90,7 +131,6 @@ fn fmt_ipv6(b: &[u8]) -> String {
     for i in 0..8 {
         groups[i] = u16::from_be_bytes([b[i * 2], b[i * 2 + 1]]);
     }
-    // 找最长连续零段
     let mut best_start = 0usize;
     let mut best_len = 0usize;
     let mut cur_start = 0usize;
@@ -112,7 +152,6 @@ fn fmt_ipv6(b: &[u8]) -> String {
     if best_len < 2 {
         best_len = 0;
     }
-
     let mut s = String::new();
     let mut i = 0;
     while i < 8 {
