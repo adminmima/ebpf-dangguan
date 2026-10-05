@@ -45,7 +45,7 @@ fmt:
 	cargo fmt --all -- --check
 
 test:
-	cargo test --workspace
+	cargo test --workspace --exclude adblock-ebpf
 
 check: clippy fmt build test verifier
 
