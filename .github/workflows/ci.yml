@@ -11,7 +11,8 @@ jobs:
         with:
           toolchain: nightly-2026-09-29
           components: rust-src, rustfmt, clippy
-          targets: bpfel-unknown-none
+          # bpfel-unknown-none 是裸机 target，nightly 无预编译 rust-std。
+          # eBPF 编译依赖 -Z build-std=core 从 rust-src 源码构建，不需要 targets。
 
       - name: Install bpf-linker
         run: cargo install bpf-linker --locked --version 0.11.1
