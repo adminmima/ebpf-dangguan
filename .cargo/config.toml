@@ -1,2 +1,4 @@
+# eBPF 程序 attach 到内核需要 root 权限：cargo run / cargo test 会通过
+# sudo -E 自动提权。clone 本仓库后无需手动 sudo。
 [target."cfg(all())"]
 runner = "sudo -E"
