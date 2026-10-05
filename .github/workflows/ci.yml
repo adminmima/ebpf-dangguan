@@ -19,8 +19,13 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy (host)
+        run: cargo clippy --workspace --exclude adblock-ebpf --all-targets -- -D warnings
+
+      - name: clippy (ebpf)
+        run: |
+          cargo clippy -p adblock-ebpf --release --target bpfel-unknown-none \
+            -Z build-std=core --target-dir target/ebpf-check -- -D warnings
 
       - name: build
         run: cargo build --release
