@@ -8,7 +8,7 @@ members = [
 default-members = ["adblock", "adblock-common"]
 
 [workspace.package]
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-or-later"
 edition = "2024"
 
 [workspace.dependencies]

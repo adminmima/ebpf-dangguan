@@ -1,0 +1,7 @@
+本项目骨架源自 aya-rs/aya-template（https://github.com/aya-rs/aya-template），
+原以 MIT OR Apache-2.0 许可，版权归上游作者所有。
+
+本项目用户态部分（adblock、adblock-common）以 AGPL-3.0-or-later 重新授权；
+eBPF 内核态部分（adblock-ebpf）以 Dual MIT/GPL 许可，与内核生态要求一致。
+
+LICENSE-MIT、LICENSE-APACHE 为上游许可全文，依其条款保留。
