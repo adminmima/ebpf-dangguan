@@ -253,15 +253,18 @@ master 上共 18 个 commit（4 基础 + 3 骨架 + 6 feature + 1 merge + 3 清�
 - trace_pipe 启用：启用。保留的 aya-log-ebpf 依赖用于内核态 info!，日志走用户态终端（非 trace_pipe）。DNS 解析调试用它比 RingBuf 更顺手
 - 测试域名清单：正常域名 baidu.com、qq.com；裸黑名单 ads.example.com；多级子域 a.b.doubleclick.net（为 Step 3.2 后缀匹配备料）
 
-### 5.3 预期新建文件
+### 5.3 实际新建文件（3.1 落地备案）
 
-adblock-ebpf/src/ 下新增：
-- dns.rs：DNS 报文解析模块
-- ptr.rs：边界访问原语（ptr_at 等）
-- maps.rs：map 定义集中（从 main.rs 抽出）
-- main.rs 修改：加 UDP dst 53 分支 + 调用 dns.rs
+adblock-ebpf/src/ 下实际新增：
+- ptr.rs：边界访问原语（ptr_at / read_u8 / read_u16_be / write_*_in）
+- dns.rs：DNS 报文定长拷贝模块（不做 label 解析）
 
-具体方案在新会话中给出，本会话不预设实现细节。
+其他改动：
+- adblock-ebpf/src/main.rs：加 UDP dst 53 分支 + 调用 dns.rs
+- adblock-common/src/lib.rs：新增 DnsEvent（296B）
+- adblock/src/main.rs：新增 DNS_EVENTS 消费循环 + parse_dns_qname
+
+原计划的 maps.rs 未建 —— map 定义仍在 main.rs，无拆分必要。
 
 ### 5.4 入口命令（新会话第一件事）
 
@@ -271,6 +274,71 @@ adblock-ebpf/src/ 下新增：
     sudo make check 2>&1 | tail -5
 
 若三项输出与本文件第一部分一致，直接进入 Step 3.1。
+
+### 5.5 verifier 约束（3.1 实测硬墙，原文照录）
+
+以下两条是 eBPF verifier 对内核侧代码的硬性限制。
+3.2 及以后任何内核侧改动都必须绕开，不要试图换个写法重撞。
+
+#### 约束 1：禁止对栈做 variable offset 写
+
+原始报错：
+```
+invalid variable-offset write to stack R0 var_off=(0x0; 0xffffffffffffffff) off=0 size=1
+```
+
+触发点：dns.rs 里曾用 `write_u8_checked(dst: &mut [u8; N], i, v)` 写栈上数组，
+i 是运行时值，verifier 拒绝 variable offset 写入栈内存。
+
+修法：写入目标改成 ringbuf 槽位（&mut MaybeUninit<T>）。
+verifier 允许 variable offset 写 ringbuf，禁止写栈。
+ptr.rs 现在的 write_*_in 全部收 MaybeUninit。
+
+#### 约束 2：指令数 100 万上限
+
+原始报错：
+```
+BPF program is too large. Processed 1000001 insn
+```
+
+触发点：eBPF 侧做 QNAME label 解析时，
+外层 label 循环（最多 128）× 内层 label 字节循环（最多 63）嵌套，
+每层迭代调 read_u8（packet 访问）+ write_u8_in（ringbuf 写），
+verifier 把所有路径展开，指令数爆 100 万。
+
+修法：eBPF 侧只做定长拷贝（一层固定上界循环），
+label 解析、0xC0 判定、QDCOUNT 校验全部挪到用户态。
+
+### 5.6 实现差异现状（与 5.1 原始范围的对照）
+
+**qname 字段语义已变**：DnsEvent.qname 装的是从 DNS 报文起点
+（含 12 字节固定头）定长拷贝的原始字节片段，**不是**呈现名（点分隔字符串）。
+qname_len 含义 = 拷贝的原始字节数（≤ 256），不是域名字符串长度。
+
+职责重划分：
+- eBPF 侧：端口过滤 + 计数（S_DNS） + 定长拷贝 DNS 报文片段进 ringbuf
+- 用户态：QDCOUNT 校验、label 解析、0xC0 压缩指针判定、
+          根域名判定、domain 字符串生成、日志打印
+
+对外行为与 5.1 原始范围一致：
+合法域名打印 `[QNAME] <domain>`；畸形包静默丢 + dns 槽计数。
+
+用户态解析函数：adblock/src/main.rs 里 `parse_dns_qname(raw: &[u8]) -> Option<String>`，
+收 raw（12B 头 + Question section），跳过 12B 头，逐 label 解析，异常返回 None。
+
+### 5.7 ptr.rs 写原语纪律修订（3.1 备案）
+
+原 3.1 工单第 3 节"写侧一律收引用，只提供健全的 checked 版"的纪律
+因 verifier 约束 1 已修订为：
+
+- 禁止：收裸指针 (*mut u8) 的 unchecked 写原语
+- 允许：对槽位（&mut MaybeUninit<T>）的有界写
+- 所有写原语对任意输入健全（不 UB）
+
+现状：ptr.rs 公开原语
+- read_u8 / read_u16_be（读报文）
+- write_u8_in / write_u16_in / write_bytes_in（写 MaybeUninit）
+- ptr_at 私有（仅 read_* 内部调）
 
 ---
 
