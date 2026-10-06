@@ -1,3 +1,4 @@
+use adblock_common::DnsEvent;
 use anyhow::Context as _;
 use aya::{
     maps::RingBuf,
@@ -7,6 +8,9 @@ use clap::Parser;
 use log::{debug, info, warn};
 use tokio::signal;
 
+// 布局锁：与内核侧 adblock-common 一致
+const _: () = assert!(core::mem::size_of::<DnsEvent>() == 296);
+
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long)]
@@ -14,7 +18,6 @@ struct Opt {
     iface: String,
 
     /// 验证模式：加载 → attach → 检查 map → detach → exit(0)
-    /// 不进入收包循环；任何一步失败以非零码退出
     #[clap(long)]
     verify: bool,
 }
@@ -38,7 +41,6 @@ async fn main() -> anyhow::Result<()> {
         "/adblock"
     )))?;
 
-    // === 短路模式：--verify ===
     if opt.verify {
         if let Err(e) = run_verify(&mut ebpf, &opt.iface) {
             eprintln!("verify FAILED: {e:#}");
@@ -48,7 +50,6 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(0);
     }
 
-    // === 正常模式 ===
     let Opt { iface, .. } = opt;
     let program: &mut Xdp = ebpf.program_mut("adblock_ebpf").unwrap().try_into()?;
     program.load()?;
@@ -56,9 +57,9 @@ async fn main() -> anyhow::Result<()> {
         "failed to attach the XDP program - try changing XdpMode::default() to XdpMode::Skb",
     )?;
 
+    // —— ICMPv6 事件流（原有）——
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").context("EVENTS map not found")?)?;
     let mut async_fd = tokio::io::unix::AsyncFd::new(ring)?;
-
     tokio::task::spawn(async move {
         loop {
             let mut guard = match async_fd.readable_mut().await {
@@ -85,24 +86,79 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // —— DNS QNAME 事件流 ——
+    let dns_ring = RingBuf::try_from(
+        ebpf.take_map("DNS_EVENTS")
+            .context("DNS_EVENTS map not found")?,
+    )?;
+    let mut dns_fd = tokio::io::unix::AsyncFd::new(dns_ring)?;
+    tokio::task::spawn(async move {
+        loop {
+            let mut guard = match dns_fd.readable_mut().await {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!("dns ringbuf wait failed: {e}");
+                    break;
+                }
+            };
+            while let Some(item) = guard.get_inner_mut().next() {
+                let data: &[u8] = item.as_ref();
+                if data.len() < 296 {
+                    continue;
+                }
+                let src_ip = &data[0..16];
+                let dst_ip = &data[16..32];
+                let src_port = u16::from_ne_bytes(data[32..34].try_into().unwrap());
+                let dst_port = u16::from_ne_bytes(data[34..36].try_into().unwrap());
+                let qlen = u16::from_ne_bytes(data[36..38].try_into().unwrap()) as usize;
+                let ip_ver = data[38];
+                if ip_ver != 4 && ip_ver != 6 {
+                    continue;
+                }
+                let qlen = qlen.min(256);
+                if data.len() < 40 + qlen {
+                    continue;
+                }
+                let raw_qname = &data[40..40 + qlen];
+                let Some(domain) = parse_dns_qname(raw_qname) else {
+                    // 畸形 / 压缩指针 / 根域名 —— eBPF 侧已 bump S_DNS，这里静默丢弃
+                    continue;
+                };
+                info!(
+                    "[QNAME] {} (len={}) src={}:{} dst={}:{} ver={}",
+                    domain,
+                    domain.len(),
+                    fmt_ip(ip_ver, src_ip),
+                    src_port,
+                    fmt_ip(ip_ver, dst_ip),
+                    dst_port,
+                    ip_ver,
+                );
+            }
+            guard.clear_ready();
+        }
+    });
+
     println!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
     println!("Exiting...");
     Ok(())
 }
 
-/// 验证模式：加载 → attach → 检查 map → detach → 返回
-/// 全程同步，任何一步失败立即返回 Err。
 fn run_verify(ebpf: &mut aya::Ebpf, iface: &str) -> anyhow::Result<()> {
-    // 1. 四个 map 存在性检查
-    for name in ["STATS", "EVENTS", "IP_BLOCKLIST_V4", "IP_BLOCKLIST_V6"] {
+    for name in [
+        "STATS",
+        "EVENTS",
+        "DNS_EVENTS",
+        "IP_BLOCKLIST_V4",
+        "IP_BLOCKLIST_V6",
+    ] {
         if ebpf.map(name).is_none() {
             anyhow::bail!("map {name} not found");
         }
         eprintln!("  map {name}: OK");
     }
 
-    // 2. XDP 加载 + attach
     let program: &mut Xdp = ebpf
         .program_mut("adblock_ebpf")
         .ok_or_else(|| anyhow::anyhow!("program adblock_ebpf not found"))?
@@ -115,14 +171,76 @@ fn run_verify(ebpf: &mut aya::Ebpf, iface: &str) -> anyhow::Result<()> {
         .with_context(|| format!("XDP attach to {iface} failed"))?;
     eprintln!("  XDP attach to {iface}: OK");
 
-    // 3. 立即 detach
     program.detach(link_id).context("XDP detach failed")?;
     eprintln!("  XDP detach: OK");
 
     Ok(())
 }
 
-/// 把 16 字节 IPv6 地址格式化成 RFC 5952 风格字符串
+/// 从 DNS 报文（12B 头 + Question section）解析首个 QNAME。
+///
+/// 输入是 eBPF 侧从 Question section 起点定长拷贝的原始字节
+/// （含 label 长度前缀和末尾 0）。
+///
+/// 返回 Some(域名，不含末尾点)；Err/None 表示：
+///   - 首字节 0x00 根域名
+///   - 压缩指针 0xC0
+///   - label 超 63
+///   - 累积超 255
+///   - 拷贝被截断（label 内容越过 raw 边界）
+fn parse_dns_qname(raw: &[u8]) -> Option<String> {
+    // raw 是 DNS 报文起点（12B 固定头 + Question section）
+    if raw.len() < 12 {
+        return None;
+    }
+    // QDCOUNT 必须 == 1
+    let qdcount = u16::from_be_bytes([raw[4], raw[5]]);
+    if qdcount != 1 {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut pos = 12usize;
+    let mut total = 0usize;
+    loop {
+        let len = *raw.get(pos)? as usize;
+        pos += 1;
+        if len == 0 {
+            if out.is_empty() {
+                return None; // 根域名
+            }
+            return Some(out);
+        }
+        if len & 0xC0 != 0 {
+            return None; // 压缩指针
+        }
+        if len > 63 {
+            return None;
+        }
+        if total + len + 1 > 255 {
+            return None;
+        }
+        let label = raw.get(pos..pos + len)?;
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push_str(&String::from_utf8_lossy(label));
+        total += len + 1;
+        pos += len;
+    }
+}
+
+/// ver=4 用前 4 字节点分十进制，ver=6 走 fmt_ipv6。
+fn fmt_ip(ip_ver: u8, b: &[u8]) -> String {
+    if ip_ver == 4 && b.len() >= 4 {
+        format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+    } else if b.len() >= 16 {
+        fmt_ipv6(&b[..16])
+    } else {
+        "?".into()
+    }
+}
+
 fn fmt_ipv6(b: &[u8]) -> String {
     if b.len() < 16 {
         return "?".into();

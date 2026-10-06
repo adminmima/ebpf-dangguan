@@ -4,7 +4,7 @@ out = subprocess.run(['sudo','bpftool','map','dump','name','STATS'],
                      capture_output=True, text=True).stdout
 names = ['total','IPv4','IPv6','other_eth','truncated','aborted',
          'dropped_v4','dropped_v6','ext_err','icmpv6','fragment',
-         'tcp','udp','other_l4','?14','?15']
+         'tcp','udp','other_l4','dns','?15']
 idx = -1
 for line in out.splitlines():
     if line.startswith('key:'):
